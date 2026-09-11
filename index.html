@@ -63,7 +63,7 @@
   #chart .empty { position:absolute; inset:0; display:grid; place-items:center; color:var(--muted); text-align:center; padding:20px; line-height:1.7 }
   #legend { position:absolute; top:8px; left:12px; z-index:4; color:var(--muted); font-size:11px; pointer-events:none; font-variant-numeric:tabular-nums }
   #maleg { position:absolute; top:24px; left:12px; z-index:4; font-size:11px; pointer-events:none; display:flex; gap:10px; font-variant-numeric:tabular-nums }
-  #ovl { position:absolute; top:0; left:0; width:100%; height:100%; z-index:3; pointer-events:none; overflow:visible }
+  #ovl { position:absolute; top:0; left:0; width:100%; height:100%; z-index:3; pointer-events:none; overflow:hidden }
   #ovl .hit { pointer-events:auto; cursor:grab }
   #chart.measuring, #chart.noting { cursor:crosshair }
   #noteEdit { position:absolute; z-index:9; width:220px; background:var(--panel); border:1px solid var(--line);
@@ -177,7 +177,8 @@
     <button class="btn" id="theme" title="Toggle light / dark">◐</button>
   </div>
   <div id="chart"><div id="legend"></div><div id="maleg"></div>
-    <svg id="ovl"><g id="gmark"></g><g id="gnotes"></g><g id="gmeasure"></g></svg>
+    <svg id="ovl"><defs><clipPath id="paneClip"><rect id="paneRect" x="0" y="0" width="0" height="0"/></clipPath></defs>
+      <g id="gmark" clip-path="url(#paneClip)"></g><g id="gnotes" clip-path="url(#paneClip)"></g><g id="gmeasure" clip-path="url(#paneClip)"></g></svg>
     <div id="hint"></div>
     <div id="tip"></div>
     <div id="noteEdit"><textarea id="noteText" placeholder="Why did you buy here?"></textarea>
@@ -598,6 +599,12 @@ function smaByDate(candles, n) {
 }
 
 // ================= chart =================
+function pane() {
+  const el = $('#chart'), ts = chart && chart.timeScale();
+  const w = ts ? ts.width() : el.clientWidth;
+  const h = el.clientHeight - (ts ? ts.height() : 0);
+  return { w: Math.max(0, w), h: Math.max(0, h) };
+}
 const crosshairOpts = () => ({
   mode: 0,
   vertLine: { visible: S.cross, labelVisible: S.cross },
@@ -612,7 +619,8 @@ function buildChart() {
   });
   volSeries = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol', color: th().grid, priceLineVisible: false, lastValueVisible: false });
   chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.84, bottom: 0 } });
-  avgSeries = chart.addLineSeries({ color: th().avg, lineWidth: 1, lineStyle: 2, priceLineVisible: false, title: 'avg cost' });
+  avgSeries = chart.addLineSeries({ color: th().avg, lineWidth: 1, lineStyle: 2, priceLineVisible: false,
+    title: 'avg cost', crosshairMarkerVisible: S.cross });
   makePriceSeries();
   chart.subscribeCrosshairMove(p => {
     const d = p.seriesData.get(priceSeries);
@@ -623,12 +631,17 @@ function buildChart() {
   });
   chart.timeScale().subscribeVisibleLogicalRangeChange(scheduleDraw);
   new ResizeObserver(scheduleDraw).observe($('#chart'));
+  // animation frames stop while the tab is hidden, so force one redraw on the way back
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { lastSig = ''; scheduleDraw(); } });
+  requestAnimationFrame(watchCoords);
 }
 function makePriceSeries() {
   if (priceSeries) chart.removeSeries(priceSeries);
   priceSeries = S.type === 'candles'
-    ? chart.addCandlestickSeries({ upColor: th().up, downColor: th().down, borderVisible: false, wickUpColor: th().up, wickDownColor: th().down })
-    : chart.addLineSeries({ color: th().line, lineWidth: S.lineW, priceLineVisible: false });
+    ? chart.addCandlestickSeries({ upColor: th().up, downColor: th().down, borderVisible: false,
+        wickUpColor: th().up, wickDownColor: th().down, crosshairMarkerVisible: S.cross })
+    : chart.addLineSeries({ color: th().line, lineWidth: S.lineW, priceLineVisible: false,
+        crosshairMarkerVisible: S.cross });
 }
 function applyTheme() {
   document.documentElement.dataset.theme = S.theme;
@@ -666,7 +679,7 @@ function computeMarkers(trades, bars) {
 function drawMarkers() {
   const g = $('#gmark');
   if (!ctx || !ctx.candles.length || !view.markers.length) { g.innerHTML = ''; view.hit = []; return; }
-  const ts = chart.timeScale(), W = $('#chart').clientWidth;
+  const ts = chart.timeScale(), W = pane().w;
   const base = 6 + S.mkSize * 2.8;
   view.hit = [];
   let out = '';
@@ -708,15 +721,16 @@ function wrap(text, n) {
 function drawNotes() {
   const g = $('#gnotes');
   if (!ctx || !ctx.candles.length || !S.notes) { g.innerHTML = ''; return; }
-  const ts = chart.timeScale(), W = $('#chart').clientWidth;
+  const ts = chart.timeScale(), { w: W, h: H } = pane();
   let out = '';
   for (const n of noteList()) {
     const x = ts.timeToCoordinate(n.time), y = priceSeries.priceToCoordinate(n.price);
     if (x == null || y == null || x < -200 || x > W + 200) continue;
-    const bx = x + (n.dx ?? 14), by = y + (n.dy ?? -46);
     const lines = wrap(n.text, 30);
     const w = Math.min(240, Math.max(70, 6.4 * Math.max(...lines.map(l => l.length)) + 16));
     const h = lines.length * 14 + 12;
+    const bx = Math.max(2, Math.min(W - w - 2, x + (n.dx ?? 14)));
+    const by = Math.max(2, Math.min(H - h - 2, y + (n.dy ?? -46)));
     out += `<line x1="${x}" y1="${y}" x2="${bx + w / 2}" y2="${by + h / 2}" stroke="${th().text}" stroke-width="1" stroke-dasharray="2 3" opacity=".5"/>
       <circle cx="${x}" cy="${y}" r="3.5" fill="${th().avg}" stroke="${th().bg}" stroke-width="1.5"/>
       <g class="hit" data-note="${n.id}">
@@ -798,7 +812,31 @@ function scheduleDraw() {
   rafPending = true;
   requestAnimationFrame(() => { rafPending = false; drawOverlay(); });
 }
-function drawOverlay() { drawMarkers(); drawNotes(); drawMeasure(); }
+function drawOverlay() {
+  const { w, h } = pane();
+  const r = $('#paneRect');
+  r.setAttribute('width', w); r.setAttribute('height', h);
+  drawMarkers(); drawNotes(); drawMeasure();
+}
+
+// The library only tells us when the *logical* range changes, which misses dragging the price
+// axis, autoscaling and anything programmatic. Watching the actual coordinate mapping catches
+// every case, and costs two function calls per frame.
+let lastSig = '';
+function coordSignature() {
+  if (!chart || !priceSeries) return '';
+  const lr = chart.timeScale().getVisibleLogicalRange();
+  const { w, h } = pane();
+  return [lr ? lr.from.toFixed(3) + ':' + lr.to.toFixed(3) : '-',
+          priceSeries.priceToCoordinate(1), priceSeries.priceToCoordinate(100), w, h].join('|');
+}
+function watchCoords() {
+  if (!document.hidden) {
+    const sig = coordSignature();
+    if (sig !== lastSig) { lastSig = sig; drawOverlay(); }
+  }
+  requestAnimationFrame(watchCoords);
+}
 
 // ---------- measure ----------
 const measure = { state: 'off', a: null, b: null };
@@ -829,7 +867,11 @@ function drawMeasure() {
   const ia = view.bars.findIndex(b => b.t === measure.a.time), ib = view.bars.findIndex(b => b.t === measure.b.time);
   const nbars = ia >= 0 && ib >= 0 ? Math.abs(ib - ia) : 0;
   const label = `${pct(change)}   ${fmt(measure.b.price - measure.a.price)}   ${days}d${nbars ? ' · ' + nbars + ' bars' : ''}`;
-  const mx = (x1 + x2) / 2, my = Math.min(y1, y2) - 12, w = label.length * 6.6 + 14, cap = 7;
+  const { w: PW, h: PH } = pane();
+  const w = label.length * 6.6 + 14, cap = 7;
+  const mx = Math.max(w / 2 + 2, Math.min(PW - w / 2 - 2, (x1 + x2) / 2));
+  let my = Math.min(y1, y2) - 12;
+  if (my - 19 < 2) my = Math.min(PH - 2, Math.max(y1, y2) + 33);       // flip below when it would clip
   svg.innerHTML = `
     <rect x="${Math.min(x1, x2)}" y="${Math.min(y1, y2)}" width="${Math.abs(x2 - x1)}" height="${Math.abs(y2 - y1)}" fill="${col}" opacity=".10"/>
     <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${col}" stroke-width="1.5"/>
@@ -944,7 +986,13 @@ function wireBar() {
   $('#lwup').onclick = () => { S.lineW = Math.min(4, S.lineW + 1); save(); syncBar(); priceSeries.applyOptions({ lineWidth: S.lineW }); };
   $('#lwdn').onclick = () => { S.lineW = Math.max(1, S.lineW - 1); save(); syncBar(); priceSeries.applyOptions({ lineWidth: S.lineW }); };
   $('#labels').onchange = e => { S.labels = e.target.checked; save(); drawOverlay(); };
-  $('#cross').onchange = e => { S.cross = e.target.checked; save(); chart.applyOptions({ crosshair: crosshairOpts() }); };
+  $('#cross').onchange = e => {
+    S.cross = e.target.checked; save();
+    chart.applyOptions({ crosshair: crosshairOpts() });
+    priceSeries.applyOptions({ crosshairMarkerVisible: S.cross });
+    avgSeries.applyOptions({ crosshairMarkerVisible: S.cross });
+    for (const n of Object.keys(maSeries)) maSeries[n].applyOptions({ crosshairMarkerVisible: false });
+  };
   $('#note').onclick = () => { setMeasure(false); setNoteMode(!noteMode); };
   $('#notesOn').onchange = e => {
     S.notes = e.target.checked; save();
