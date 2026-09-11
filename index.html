@@ -687,19 +687,21 @@ function drawMarkers() {
     const x = ts.timeToCoordinate(m.t);
     if (x == null || x < -60 || x > W + 60) continue;
     const up = m.side === 'buy';
-    const edge = priceSeries.priceToCoordinate(up ? m.bar.l : m.bar.h);
-    if (edge == null) continue;
+    // The tip sits on the price actually traded at, so the marker points at the exact spot.
+    // Anchoring to the bar's high or low instead leaves markers floating away from the line,
+    // because a line chart draws the close while the low can be far beneath it.
+    const y = priceSeries.priceToCoordinate(m.v / m.q);
+    if (y == null) continue;
     const side = base * Math.min(2.8, Math.max(0.6, m.rel));
     const h = side * 0.866;                                    // equilateral
-    const cy = up ? edge + 6 + h / 2 : edge - 6 - h / 2;
+    const apex = up ? y + 2 : y - 2;                           // 2px clear of the line
+    const flat = up ? apex + h : apex - h;                     // the opposite edge
     const col = up ? th().up : th().down;
-    const pts = up
-      ? `${x},${cy - h / 2} ${x - side / 2},${cy + h / 2} ${x + side / 2},${cy + h / 2}`
-      : `${x},${cy + h / 2} ${x - side / 2},${cy - h / 2} ${x + side / 2},${cy - h / 2}`;
+    const pts = `${x},${apex} ${x - side / 2},${flat} ${x + side / 2},${flat}`;
     out += `<polygon points="${pts}" fill="${col}" fill-opacity=".55" stroke="${col}" stroke-opacity=".9" stroke-width="1"/>`;
-    view.hit.push({ m, x, w: side, top: cy - h / 2, bot: cy + h / 2 });
+    view.hit.push({ m, x, w: side, top: Math.min(apex, flat), bot: Math.max(apex, flat) });
     if (S.labels) {
-      const ty = up ? cy + h / 2 + 11 : cy - h / 2 - 4;
+      const ty = up ? flat + 11 : flat - 4;
       out += `<text x="${x}" y="${ty}" text-anchor="middle" font-size="10" font-family="-apple-system,system-ui,sans-serif" fill="${col}" fill-opacity=".95">${fmt0(m.q)} @ ${fmt(m.v / m.q)}</text>`;
     }
   }

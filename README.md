@@ -68,9 +68,10 @@ Every setting is remembered in your browser.
 | Table | Sits on the bar above the trade table, on the right. Switch it off for a taller chart. |
 | ◐ | Light or dark theme. |
 
-Buy markers are upward green triangles below the bar, sells are downward red triangles above it.
-They are drawn semi-transparent so the price line stays readable underneath, which matters most
-when you are zoomed out.
+Buys are green triangles pointing up from below, sells are red triangles pointing down from above.
+The **tip of each triangle sits on the price you actually traded at**, so you can read the entry
+and exit straight off the chart. They are semi-transparent, so the price line stays readable
+underneath, which matters most when you are zoomed out.
 
 **Hover any triangle** and it tells you what you did in plain words: "Bought 5 @ 65.45", with the
 date and total below. Where several trades share a bar it says how many, and where a split or bonus
