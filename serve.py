@@ -92,14 +92,19 @@ class Kite:
         try:
             self.call('get_profile')
             return True
-        except RuntimeError:
-            return False      # the server just says "Failed to execute" until authorised
+        except Exception:
+            # not authorised yet, or a stale/expired session (Zerodha answers 400/403);
+            # either way the app should offer a fresh login rather than crash
+            return False
 
     def login_url(self):
-        # a fresh session so the link cannot collide with a half-finished one
+        # a fresh session so the link cannot collide with a half-finished or expired one
         self.session = None
-        if os.path.exists(SESSION_FILE):
-            os.remove(SESSION_FILE)
+        try:
+            if os.path.exists(SESSION_FILE):
+                os.remove(SESSION_FILE)
+        except OSError:
+            pass
         self.initialize()
         text = self.call('login')
         m = re.search(r'https://mcp\.kite\.trade/authorize\?session_id=\S+', str(text))
@@ -211,7 +216,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith('/api/status'):
-            return self.send_json({'helper': True, 'loggedIn': kite.logged_in()})
+            try:
+                return self.send_json({'helper': True, 'loggedIn': kite.logged_in()})
+            except Exception as e:                              # noqa: BLE001
+                return self.send_json({'helper': True, 'loggedIn': False, 'note': str(e)})
         return super().do_GET()
 
     def do_POST(self):
