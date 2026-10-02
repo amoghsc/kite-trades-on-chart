@@ -16,6 +16,10 @@ prices come from Zerodha's own service, authorised by logging in the way you nor
 3. Leave that window open while you use the app. Closing it stops the app; double-click
    start.command again next time. If it says the port is already in use, the app is already
    running, so just open http://localhost:8770.
+
+   **Tired of starting it?** Double-click **install-autostart.command** once. After that the app
+   starts automatically when you log in, restarts itself if it ever stops, and http://localhost:8770
+   simply always works. To undo it, run `./install-autostart.command uninstall` in this folder.
 4. Download your tradebook from [Zerodha Console](https://console.zerodha.com/reports/tradebook):
    Reports → Tradebook → segment **Equity** → pick a date range → download CSV.
    Zerodha allows one year per file, so download one file per year.
@@ -84,6 +88,7 @@ has moved the chart price it also shows what you actually paid at the time.
 | `index.html` | The whole app. Loads its charting library from a CDN. |
 | `serve.py` | Local helper: serves the page and relays calls to Zerodha. No dependencies. |
 | `start.command` | Double-click launcher for macOS. |
+| `install-autostart.command` | Optional, macOS: keeps the app always running, from login onwards. |
 | `cache/` | Downloaded candles, and your Kite session token. Safe to delete, it refills. |
 
 Your trades, your notes and your settings live in the browser's own storage, not in this folder.
@@ -147,6 +152,8 @@ ever talks to Zerodha, using their own login. You cannot see their trades and th
 | macOS refuses to open start.command | Right-click the file, choose Open, then confirm once. |
 | "python3: command not found" on Windows | Try `py serve.py`, or reinstall Python with "Add to PATH" ticked. |
 | Login link does nothing | Their Zerodha session may have expired. Click Connect Kite again. |
+| It worked yesterday, now the page will not load | The helper is not running. Start it, or install the autostart above so it never happens again. |
+| "Connect Kite" reappears after a while | Normal. Zerodha sessions expire; log in again. Downloaded prices are kept. |
 | A stock shows `○` and no chart | It is delisted, merged or expired, so no price history exists. Its trades still show in the table. |
 
 ## Disclaimer
