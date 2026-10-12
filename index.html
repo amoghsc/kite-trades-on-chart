@@ -107,6 +107,18 @@
   .note b { color:var(--fg) } .note code { background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:1px 6px; font-size:12px }
   .note ol { margin:8px 0 0; padding-left:20px } .note li { margin:4px 0 }
   #summary { margin-top:16px }
+  #library:not(:empty) { margin-top:20px }
+  .fh { font-size:13px; margin:0 0 8px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; font-weight:600 }
+  .flist { width:100%; border-collapse:collapse; background:var(--panel); border:1px solid var(--line); border-radius:9px; overflow:hidden }
+  .flist th, .flist td { padding:7px 11px; text-align:right; font-size:12px; border-bottom:1px solid var(--line); white-space:nowrap }
+  .flist th { color:var(--muted); font-weight:500; font-size:10.5px; text-transform:uppercase; letter-spacing:.05em }
+  .flist td.l, .flist th.l { text-align:left }
+  .flist td.l:first-child { max-width:250px; overflow:hidden; text-overflow:ellipsis }
+  .flist tbody tr:hover { background:var(--hover) }
+  .flist tfoot td { border-bottom:0; color:var(--muted); background:var(--bg) }
+  .flist tfoot b { color:var(--fg) }
+  .xbtn { background:transparent; border:0; color:var(--muted); cursor:pointer; font-size:13px; padding:0 3px; border-radius:4px; font-family:inherit }
+  .xbtn:hover { color:var(--sell); background:color-mix(in srgb, var(--sell) 14%, transparent) }
   .sumgrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:9px; margin-bottom:12px }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:10px 12px }
   .card b { font-size:19px; display:block; font-variant-numeric:tabular-nums } .card span { color:var(--muted); font-size:11px }
@@ -128,10 +140,12 @@
     <p class="lede">Drop your Zerodha tradebook files below to see every trade you have made plotted on that stock's price chart, with your average cost, realized profit and holding periods.<br>Your data stays on this computer. Nothing is uploaded.</p>
 
     <div id="drop">
-      <b>Drop tradebook CSV files here</b>
-      <span>or click to choose them &middot; several years at once is fine</span>
+      <b id="droptitle">Drop tradebook CSV files here</b>
+      <span id="dropsub">or click to choose them &middot; several years at once is fine</span>
       <input type="file" id="file" accept=".csv,text/csv" multiple hidden>
     </div>
+
+    <div id="library"></div>
 
     <div class="note">
       <b>Where to get the files</b>
@@ -139,6 +153,8 @@
         <li>Open <a href="https://console.zerodha.com/reports/tradebook" target="_blank" rel="noopener">console.zerodha.com</a> &rarr; Reports &rarr; Tradebook.</li>
         <li>Pick segment <b>Equity</b>, set a date range, and download as CSV. Zerodha allows one year per file, so download one per year.</li>
         <li>Drop all of them here together. Overlapping ranges are fine, repeats are ignored.</li>
+        <li>Next time, you only need the stretch since your last file. New exports are added to
+            what is already here, and every file you have added is listed below.</li>
       </ol>
     </div>
 
@@ -227,6 +243,8 @@ const MA_COLORS = { 50:'#5b8def', 100:'#c678dd', 150:'#e59b3f', 200:'#4bb3c4' };
 const th = () => THEMES[S.theme];
 
 let TRADES = [], GROUPS = {}, INSTR = {}, CANDLES = {};
+let FILES = [];              // [{id, name, added, kept, first, last, hash}] — the files you have added
+const ROWS = {};             // file id -> its parsed rows, so a file can be removed again later
 let chart, priceSeries, avgSeries, volSeries, current = null, sortKey = 'name', ctx = null;
 let helper = { helper:false, loggedIn:false };
 const maSeries = {}, summary = {};
@@ -250,35 +268,33 @@ function parseCSV(text) {
 
 const NEEDED = ['symbol', 'trade_date', 'trade_type', 'quantity', 'price'];
 
-function readTradebooks(files) {
-  const raw = [], problems = [], info = [];
+function readOneTradebook(f) {
+  const rows = parseCSV(f.text);
+  const hi = rows.findIndex(r => r.map(x => x.trim().toLowerCase()).includes('trade_date'));
+  if (hi < 0) return { rows: [], problem: `<b>${esc(f.name)}</b> does not look like a tradebook: no <code>trade_date</code> column found.` };
+  const head = rows[hi].map(x => x.trim().toLowerCase());
+  const missing = NEEDED.filter(n => !head.includes(n));
+  if (missing.length) return { rows: [], problem: `<b>${esc(f.name)}</b> is missing the column${missing.length > 1 ? 's' : ''} ${missing.map(m => `<code>${m}</code>`).join(', ')}.` };
+  const out = [];
   let nonEquity = 0;
-  for (const f of files) {
-    const rows = parseCSV(f.text);
-    const hi = rows.findIndex(r => r.map(x => x.trim().toLowerCase()).includes('trade_date'));
-    if (hi < 0) { problems.push(`<b>${esc(f.name)}</b> does not look like a tradebook: no <code>trade_date</code> column found.`); continue; }
-    const head = rows[hi].map(x => x.trim().toLowerCase());
-    const missing = NEEDED.filter(n => !head.includes(n));
-    if (missing.length) { problems.push(`<b>${esc(f.name)}</b> is missing the column${missing.length > 1 ? 's' : ''} ${missing.map(m => `<code>${m}</code>`).join(', ')}.`); continue; }
-    let n = 0;
-    for (let i = hi + 1; i < rows.length; i++) {
-      const r = rows[i]; if (!r.join('').trim()) continue;
-      const o = {}; head.forEach((h, j) => o[h] = (r[j] ?? '').trim());
-      if (!o.trade_date || !o.symbol) continue;
-      const seg = (o.segment || 'EQ').toUpperCase();
-      if (seg && seg !== 'EQ') { nonEquity++; continue; }
-      raw.push(o); n++;
-    }
-    info.push(`${f.name}: ${n} rows`);
+  for (let i = hi + 1; i < rows.length; i++) {
+    const r = rows[i]; if (!r.join('').trim()) continue;
+    const o = {}; head.forEach((h, j) => o[h] = (r[j] ?? '').trim());
+    if (!o.trade_date || !o.symbol) continue;
+    if ((o.segment || 'EQ').toUpperCase() !== 'EQ') { nonEquity++; continue; }
+    out.push(o);
   }
-  return { raw, problems, info, nonEquity };
+  return { rows: out, nonEquity };
 }
+
+const tradeKey = r => r.trade_id || `${r.symbol}|${r.trade_date}|${r.order_execution_time}|${r.quantity}|${r.price}|${r.trade_type}`;
+const hashText = t => { let h = 0x811c9dc5; for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = (h * 0x01000193) >>> 0; } return h.toString(16) + '-' + t.length; };
 
 function buildDataset(raw) {
   // de-duplicate: the same trade appears in every export whose range covers it
   const seen = new Set(), trades = [];
   for (const r of raw) {
-    const key = r.trade_id || `${r.symbol}|${r.trade_date}|${r.order_execution_time}|${r.quantity}|${r.price}|${r.trade_type}`;
+    const key = tradeKey(r);
     if (seen.has(key)) continue;
     seen.add(key); trades.push(r);
   }
@@ -326,58 +342,131 @@ function buildDataset(raw) {
   return { trades: out, groups, dupes: raw.length - trades.length };
 }
 
-// ================= setup screen =================
+// ================= your files =================
+// Everything you have added is kept, so a new export is appended rather than replacing
+// what is already there. Each file's rows are stored separately so it can be removed again.
 let pending = null;
+
+async function rebuildFromFiles() {
+  const raw = FILES.flatMap(f => ROWS[f.id] || []);
+  const ds = buildDataset(raw);
+  TRADES = ds.trades; GROUPS = ds.groups;
+  await DB.set('files', FILES);
+  await DB.set('trades', TRADES);
+  await DB.set('groups', GROUPS);
+  INSTR = Object.fromEntries(Object.entries(INSTR).filter(([k]) => GROUPS[k]));
+  await DB.set('instr', INSTR);
+}
+
+function fileRowsHtml() {
+  if (!FILES.length) return '';
+  const total = TRADES.length, inst = Object.keys(GROUPS).length;
+  const dates = TRADES.length ? [TRADES[0].date, TRADES[TRADES.length - 1].date] : ['–', '–'];
+  return `<h3 class="fh">Files you have added</h3>
+    <table class="flist"><thead><tr><th class="l">File</th><th title="Trades contained in this file">Trades</th><th class="l">Covers</th><th class="l">Added</th><th></th></tr></thead><tbody>
+    ${FILES.map(f => `<tr>
+        <td class="l">${esc(f.name)}</td>
+        <td>${new Set((ROWS[f.id] || []).map(tradeKey)).size.toLocaleString('en-IN')}</td>
+        <td class="l">${f.first} → ${f.last}</td>
+        <td class="l">${new Date(f.added).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+        <td><button class="xbtn" data-rm="${f.id}" title="Remove this file">✕</button></td>
+      </tr>`).join('')}
+    </tbody><tfoot><tr>
+      <td class="l">${FILES.length} file${FILES.length > 1 ? 's' : ''} &rarr; <b>${total.toLocaleString('en-IN')}</b> trades after removing repeats</td>
+      <td></td><td class="l">${dates[0]} → ${dates[1]}</td><td class="l">${inst} instruments</td><td></td>
+    </tr></tfoot></table>`;
+}
+
+function renderLibrary() {
+  $('#library').innerHTML = fileRowsHtml();
+  $$('#library [data-rm]').forEach(b => b.onclick = async () => {
+    const f = FILES.find(x => x.id === b.dataset.rm);
+    if (!f) return;
+    if (!confirm(`Remove ${f.name}?\n\nTrades that only came from this file will disappear from the charts. Trades also present in another file are kept.`)) return;
+    FILES = FILES.filter(x => x.id !== f.id);
+    delete ROWS[f.id];
+    await DB.del('rows:' + f.id);
+    await rebuildFromFiles();
+    renderLibrary(); renderActions();
+    if (TRADES.length) { await startApp(); } else { document.body.classList.add('setup'); }
+    showSetup(true);
+  });
+}
 
 function showSetup(force) {
   $('#setup').classList.toggle('show', !!force);
-  if (force) renderActions();
+  if (force) { renderLibrary(); renderActions(); }
+  $('#droptitle').textContent = FILES.length ? 'Drop your newest tradebook here' : 'Drop tradebook CSV files here';
+  $('#dropsub').textContent = FILES.length
+    ? 'it is added to what you already have, so you only need the new stretch'
+    : 'or click to choose them · several years at once is fine';
 }
+
 function renderActions(extra = '') {
   const has = TRADES.length > 0;
-  $('#acts').innerHTML = (pending ? `<button class="btn go" id="useit">Use this data</button>` : '')
+  $('#acts').innerHTML = (pending ? `<button class="btn go" id="useit">${pending.label}</button>` : '')
     + (has ? `<button class="btn" id="close">Back to charts</button>` : '')
     + (has ? `<button class="btn" id="clear">Clear everything</button>` : '') + extra;
   if ($('#useit')) $('#useit').onclick = commit;
   if ($('#close')) $('#close').onclick = () => { pending = null; $('#summary').innerHTML = ''; showSetup(false); };
   if ($('#clear')) $('#clear').onclick = async () => {
-    if (!confirm('Remove your trades and all downloaded prices from this browser?')) return;
+    if (!confirm('Remove your trades, your notes and all downloaded prices from this browser?')) return;
     for (const k of await DB.keys()) await DB.del(k);
     location.reload();
   };
 }
 
 async function handleFiles(fileList) {
-  const files = [];
-  for (const f of fileList) files.push({ name: f.name, text: await f.text() });
-  const { raw, problems, info, nonEquity } = readTradebooks(files);
-  if (!raw.length) {
-    $('#summary').innerHTML = problems.map(p => `<div class="warn bad">${p}</div>`).join('')
-      || `<div class="warn bad">No trades found in ${files.length} file${files.length > 1 ? 's' : ''}.</div>`;
-    pending = null; renderActions(); return;
+  const existingKeys = new Set(FILES.flatMap(f => ROWS[f.id] || []).map(tradeKey));
+  const incoming = [], problems = [];
+  let nonEquity = 0, already = 0, repeats = 0;
+
+  for (const file of fileList) {
+    const text = await file.text();
+    const hash = hashText(text);
+    if (FILES.some(f => f.hash === hash)) { already++; continue; }     // same file dropped twice
+    const { rows, problem, nonEquity: ne } = readOneTradebook({ name: file.name, text });
+    if (problem) { problems.push(problem); continue; }
+    nonEquity += ne || 0;
+    if (!rows.length) { problems.push(`<b>${esc(file.name)}</b> has no equity trades in it.`); continue; }
+    const dates = rows.map(r => r.trade_date).sort();
+    let fresh = 0;
+    for (const r of rows) { const k = tradeKey(r); if (existingKeys.has(k)) repeats++; else { existingKeys.add(k); fresh++; } }
+    incoming.push({ id: 'f' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+                    name: file.name, added: Date.now(), hash,
+                    first: dates[0], last: dates[dates.length - 1],
+                    kept: fresh, rowCount: rows.length, rows });
   }
-  const ds = buildDataset(raw);
-  pending = ds;
-  const dates = ds.trades.map(t => t.date);
-  const warnings = problems.map(p => `<div class="warn bad">${p}</div>`).join('')
-    + (nonEquity ? `<div class="warn">${nonEquity} non-equity row${nonEquity > 1 ? 's were' : ' was'} skipped. This tool covers the equity tradebook only.</div>` : '')
-    + (ds.dupes ? `<div class="warn">${ds.dupes} duplicate row${ds.dupes > 1 ? 's' : ''} ignored, from overlapping exports.</div>` : '');
+
+  const newTrades = incoming.reduce((a, f) => a + f.kept, 0);
+  const notes = problems.map(p => `<div class="warn bad">${p}</div>`).join('')
+    + (already ? `<div class="warn">${already} file${already > 1 ? 's were' : ' was'} already added, so skipped.</div>` : '')
+    + (nonEquity ? `<div class="warn">${nonEquity} non-equity row${nonEquity > 1 ? 's' : ''} skipped. This tool covers the equity tradebook only.</div>` : '')
+    + (repeats ? `<div class="warn">${repeats} trade${repeats > 1 ? 's were' : ' was'} already in your data, from an overlapping export. Counted once.</div>` : '');
+
+  if (!incoming.length) { pending = null; $('#summary').innerHTML = notes || `<div class="warn bad">Nothing to add.</div>`; renderActions(); return; }
+
+  pending = { files: incoming, label: FILES.length ? `Add ${newTrades.toLocaleString('en-IN')} new trade${newTrades === 1 ? '' : 's'}` : 'Use this data' };
   $('#summary').innerHTML = `<div class="sumgrid">
-      <div class="card"><b>${ds.trades.length.toLocaleString('en-IN')}</b><span>trades</span></div>
-      <div class="card"><b>${Object.keys(ds.groups).length}</b><span>instruments</span></div>
-      <div class="card"><b>${dates[0]}</b><span>first trade</span></div>
-      <div class="card"><b>${dates[dates.length - 1]}</b><span>last trade</span></div>
-    </div>${warnings}<div class="note">Read ${info.map(esc).join(' &middot; ')}</div>`;
+      <div class="card"><b>${newTrades.toLocaleString('en-IN')}</b><span>new trades</span></div>
+      <div class="card"><b>${incoming.length}</b><span>file${incoming.length > 1 ? 's' : ''} to add</span></div>
+      <div class="card"><b>${incoming.map(f => f.first).sort()[0]}</b><span>earliest</span></div>
+      <div class="card"><b>${incoming.map(f => f.last).sort().pop()}</b><span>latest</span></div>
+    </div>${notes}<div class="note">${incoming.map(f => `${esc(f.name)}: ${f.rowCount} rows, ${f.kept} new`).join('<br>')}</div>`;
   renderActions();
 }
 
 async function commit() {
   if (!pending) return;
-  TRADES = pending.trades; GROUPS = pending.groups; pending = null;
-  await DB.set('trades', TRADES); await DB.set('groups', GROUPS);
-  // drop instrument mappings for groups that no longer exist
-  INSTR = Object.fromEntries(Object.entries(INSTR).filter(([k]) => GROUPS[k]));
-  await DB.set('instr', INSTR);
+  for (const f of pending.files) {
+    const { rows, ...meta } = f;
+    ROWS[meta.id] = rows;
+    await DB.set('rows:' + meta.id, rows);
+    FILES.push(meta);
+  }
+  FILES.sort((a, b) => a.first < b.first ? -1 : 1);
+  pending = null;
+  await rebuildFromFiles();
   $('#summary').innerHTML = ''; showSetup(false); document.body.classList.remove('setup');
   await startApp();
   if (helper.helper) await maybeOfferPrices();
@@ -1117,9 +1206,30 @@ async function startApp() {
 
   pingHelper();
   try {
+    FILES = (await DB.get('files')) || [];
     TRADES = (await DB.get('trades')) || [];
     GROUPS = (await DB.get('groups')) || {};
     INSTR = (await DB.get('instr')) || {};
+
+    if (FILES.length) {
+      for (const f of FILES) ROWS[f.id] = (await DB.get('rows:' + f.id)) || [];
+      await rebuildFromFiles();
+    } else if (TRADES.length) {
+      // data added before files were tracked: keep it, and show it as one entry so it can
+      // be listed and removed like any other
+      const dates = TRADES.map(t => t.date).sort();
+      const id = 'legacy';
+      ROWS[id] = TRADES.map(t => ({
+        symbol: t.symbol, isin: t.isin, trade_date: t.date, exchange: t.exchange, series: t.series,
+        trade_type: t.side, quantity: String(t.qty), price: String(t.price), segment: 'EQ',
+        trade_id: t.trade_id, order_id: t.order_id, order_execution_time: t.time,
+      }));
+      FILES = [{ id, name: 'Data added earlier', added: Date.now(), hash: 'legacy',
+                 first: dates[0], last: dates[dates.length - 1], kept: TRADES.length, rowCount: TRADES.length }];
+      await DB.set('rows:' + id, ROWS[id]);
+      await rebuildFromFiles();
+    }
+
     for (const gid of Object.keys(GROUPS)) { const c = await DB.get('c:' + gid); if (c) CANDLES[gid] = c; }
   } catch (e) { console.warn('storage unavailable', e); }
 
@@ -1128,7 +1238,7 @@ async function startApp() {
     onhashchange = () => { const h = location.hash.slice(1); if (h && h !== current && GROUPS[h]) show(h); };
     await pingHelper();
   } else {
-    document.body.classList.add('setup'); renderActions();
+    document.body.classList.add('setup'); showSetup(false); renderLibrary(); renderActions();
   }
 })();
 </script>

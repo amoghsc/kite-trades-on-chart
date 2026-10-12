@@ -35,6 +35,22 @@ trade table, realized profit, holdings, average cost and holding periods.
 You do not get the price charts. A web page is not permitted to call Zerodha's servers directly,
 which is the only reason `serve.py` exists. It serves the page and passes those requests along.
 
+## Adding new trades later
+
+You do not re-upload everything. Open **Data**, drop in the newest export, and it is added to what
+is already there. Download a range starting from roughly your last trade; overlap is harmless.
+
+The Data page lists every file you have added, with how many trades each holds, the period it
+covers, and when you added it, so you always know exactly what the charts are built from. The
+footer shows the combined total after repeats are removed.
+
+- Dropping a file you have already added is detected and skipped.
+- Overlapping exports are fine. A trade present in two files is counted once, and the page tells
+  you how many repeats it folded together.
+- **✕** removes a file. Trades that came only from it disappear from the charts; trades also
+  present in another file stay.
+- After adding, click **Get prices** to pull candles for any newly traded stock.
+
 ## What the numbers mean
 
 - Green marker below a bar is a buy, red above is a sell. Trades in the same bar on the same side
@@ -130,6 +146,7 @@ the folder only after deleting `cache/`.
    Zerodha allows one year per file, so one file per year they want to see.
 5. **Drag those CSV files onto the page.** It shows what it read. They click "Use this data".
    At this point the trade table, realized profit, holdings and holding periods already work.
+   Later on they only need to add the newest stretch: see "Adding new trades" below.
 6. **Click "Connect Kite".** A Zerodha login page opens in a new tab. They log in to their own
    account and approve. The app notices and continues on its own.
 7. **Let the prices download.** A progress bar runs through their instruments. Budget roughly five
