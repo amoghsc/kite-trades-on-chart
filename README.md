@@ -107,6 +107,10 @@ has moved the chart price it also shows what you actually paid at the time.
 | `install-autostart.command` | Optional, macOS: keeps the app always running, from login onwards. |
 | `cache/` | Downloaded candles, and your Kite session token. Safe to delete, it refills. |
 
+The autostart agent logs to `~/Library/Logs/kite-trades-on-chart.log`, deliberately outside this
+folder: a log file inside Documents can pick up a macOS access attribute that launchd cannot open,
+which stops the whole job with an unexplained `EX_CONFIG`.
+
 Your trades, your notes and your settings live in the browser's own storage, not in this folder.
 Clearing site data for localhost clears them, and a different browser starts fresh.
 
@@ -170,6 +174,7 @@ ever talks to Zerodha, using their own login. You cannot see their trades and th
 | "python3: command not found" on Windows | Try `py serve.py`, or reinstall Python with "Add to PATH" ticked. |
 | Login link does nothing | Their Zerodha session may have expired. Click Connect Kite again. |
 | It worked yesterday, now the page will not load | The helper is not running. Start it, or install the autostart above so it never happens again. |
+| Autostart installed but nothing is served | Run `launchctl print gui/$(id -u)/com.kite-trades-on-chart`. `EX_CONFIG` means launchd could not start it at all, usually because it cannot open its log file; delete `~/Library/Logs/kite-trades-on-chart.log` and run the installer again. |
 | "Connect Kite" reappears after a while | Normal. Zerodha sessions expire; log in again. Downloaded prices are kept. |
 | A stock shows `○` and no chart | It is delisted, merged or expired, so no price history exists. Its trades still show in the table. |
 

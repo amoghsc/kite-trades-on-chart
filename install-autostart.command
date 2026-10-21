@@ -29,7 +29,11 @@ if [ -z "$PY" ]; then
   read -r -p "Press return to close." _; exit 1
 fi
 
-mkdir -p "$HOME/Library/LaunchAgents" "$HERE/cache"
+# Logs go to ~/Library/Logs, never inside the app folder. A log file living under
+# Documents can pick up a com.apple.macl access attribute, after which launchd cannot
+# open it and refuses to start the job at all, with a bare EX_CONFIG and no explanation.
+LOG="$HOME/Library/Logs/kite-trades-on-chart.log"
+mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs" "$HERE/cache"
 cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -46,8 +50,8 @@ cat > "$PLIST" <<PLISTEOF
   <key>RunAtLoad</key>          <true/>
   <key>KeepAlive</key>          <true/>
   <key>ProcessType</key>        <string>Background</string>
-  <key>StandardOutPath</key>    <string>$HERE/cache/server.log</string>
-  <key>StandardErrorPath</key>  <string>$HERE/cache/server.log</string>
+  <key>StandardOutPath</key>    <string>$LOG</string>
+  <key>StandardErrorPath</key>  <string>$LOG</string>
 </dict>
 </plist>
 PLISTEOF
@@ -59,7 +63,7 @@ if launchctl bootstrap "gui/$(id -u)" "$PLIST"; then
     echo "Done. The app is running at http://localhost:$PORT and will start automatically from now on."
     open "http://localhost:$PORT" 2>/dev/null
   else
-    echo "Installed, but it is not answering yet. Check $HERE/cache/server.log"
+    echo "Installed, but it is not answering yet. Check $LOG"
   fi
 else
   echo "Could not install the login agent. You can still use start.command."
