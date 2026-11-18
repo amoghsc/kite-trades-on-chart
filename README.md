@@ -174,6 +174,7 @@ ever talks to Zerodha, using their own login. You cannot see their trades and th
 | "python3: command not found" on Windows | Try `py serve.py`, or reinstall Python with "Add to PATH" ticked. |
 | Login link does nothing | Their Zerodha session may have expired. Click Connect Kite again. |
 | It worked yesterday, now the page will not load | The helper is not running. Start it, or install the autostart above so it never happens again. |
+| Autostart installed but nothing is served, log full of tracebacks | Older versions died at startup when Zerodha was unreachable or the saved login had gone stale, and the agent then restarted them forever. Update to the current `serve.py`. |
 | Autostart installed but nothing is served | Run `launchctl print gui/$(id -u)/com.kite-trades-on-chart`. `EX_CONFIG` means launchd could not start it at all, usually because it cannot open its log file; delete `~/Library/Logs/kite-trades-on-chart.log` and run the installer again. |
 | "Connect Kite" reappears after a while | Normal. Zerodha sessions expire; log in again. Downloaded prices are kept. |
 | A stock shows `○` and no chart | It is delisted, merged or expired, so no price history exists. Its trades still show in the table. |

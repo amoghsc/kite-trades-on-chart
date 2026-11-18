@@ -31,8 +31,20 @@ class Kite:
         self.lock = threading.Lock()
         self.last = 0.0
         self._id = 0
-        if not self.session:
-            self.initialize()
+        # Deliberately no network here. The page must still be served when Zerodha is
+        # unreachable or the saved session has gone stale; connecting happens on first use.
+
+    def _next(self):
+        self._id += 1
+        return self._id
+
+    def _forget_session(self):
+        self.session = None
+        try:
+            if os.path.exists(SESSION_FILE):
+                os.remove(SESSION_FILE)
+        except OSError:
+            pass
 
     def _post(self, payload):
         headers = {'Content-Type': 'application/json',
@@ -66,17 +78,27 @@ class Kite:
         return json.loads(body) if body else {}
 
     def initialize(self):
-        self._id += 1
-        self._post({'jsonrpc': '2.0', 'id': self._id, 'method': 'initialize', 'params': {
+        self._post({'jsonrpc': '2.0', 'id': self._next(), 'method': 'initialize', 'params': {
             'protocolVersion': '2025-03-26', 'capabilities': {},
             'clientInfo': {'name': 'kite-charting', 'version': '2.0'}}})
         self._post({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
 
     def call(self, tool, **args):
+        body = lambda: {'jsonrpc': '2.0', 'id': self._next(), 'method': 'tools/call',
+                        'params': {'name': tool, 'arguments': args}}
         with self.lock:
-            self._id += 1
-            r = self._post({'jsonrpc': '2.0', 'id': self._id, 'method': 'tools/call',
-                            'params': {'name': tool, 'arguments': args}})
+            try:
+                if not self.session:
+                    self.initialize()
+                r = self._post(body())
+            except urllib.error.HTTPError as e:
+                # a saved session that Zerodha no longer accepts: throw it away, open a
+                # fresh one and try once more, rather than failing until someone notices
+                if e.code not in (400, 401, 403):
+                    raise
+                self._forget_session()
+                self.initialize()
+                r = self._post(body())
         if 'error' in r:
             raise RuntimeError(r['error'].get('message', 'unknown error'))
         res = r.get('result', {})

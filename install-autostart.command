@@ -49,6 +49,7 @@ cat > "$PLIST" <<PLISTEOF
   <key>EnvironmentVariables</key><dict><key>PORT</key><string>$PORT</string></dict>
   <key>RunAtLoad</key>          <true/>
   <key>KeepAlive</key>          <true/>
+  <key>ThrottleInterval</key>   <integer>30</integer>
   <key>ProcessType</key>        <string>Background</string>
   <key>StandardOutPath</key>    <string>$LOG</string>
   <key>StandardErrorPath</key>  <string>$LOG</string>
