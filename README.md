@@ -105,7 +105,7 @@ has moved the chart price it also shows what you actually paid at the time.
 | `serve.py` | Local helper: serves the page and relays calls to Zerodha. No dependencies. |
 | `start.command` | Double-click launcher for macOS. |
 | `install-autostart.command` | Optional, macOS: keeps the app always running, from login onwards. |
-| `cache/` | Downloaded candles, and your Kite session token. Safe to delete, it refills. |
+| `cache/` | Downloaded candles, plus `.auth.json` holding your Zerodha access token. Safe to delete; you just sign in again. |
 
 The autostart agent logs to `~/Library/Logs/kite-trades-on-chart.log`, deliberately outside this
 folder: a log file inside Documents can pick up a macOS access attribute that launchd cannot open,
@@ -134,7 +134,7 @@ start.command
 README.md
 ```
 
-**Never send the `cache/` folder.** It holds your Kite session token. Zip the four files, or send
+**Never send the `cache/` folder.** It holds your Zerodha access token. Zip the four files, or send
 the folder only after deleting `cache/`.
 
 ### What they do
@@ -151,8 +151,9 @@ the folder only after deleting `cache/`.
 5. **Drag those CSV files onto the page.** It shows what it read. They click "Use this data".
    At this point the trade table, realized profit, holdings and holding periods already work.
    Later on they only need to add the newest stretch: see "Adding new trades" below.
-6. **Click "Connect Kite".** A Zerodha login page opens in a new tab. They log in to their own
-   account and approve. The app notices and continues on its own.
+6. **Click "Connect Kite".** Zerodha's own "Connect app to Kite" page opens in a new tab. They sign
+   in and approve. The tab says it is done, and the app picks it up on its own. Signing in happens
+   entirely on Zerodha's site; the app never sees the password.
 7. **Let the prices download.** A progress bar runs through their instruments. Budget roughly five
    to fifteen minutes the first time, depending on how many stocks they have traded. After that only
    new days are fetched, which takes seconds.
@@ -176,7 +177,8 @@ ever talks to Zerodha, using their own login. You cannot see their trades and th
 | It worked yesterday, now the page will not load | The helper is not running. Start it, or install the autostart above so it never happens again. |
 | Autostart installed but nothing is served, log full of tracebacks | Older versions died at startup when Zerodha was unreachable or the saved login had gone stale, and the agent then restarted them forever. Update to the current `serve.py`. |
 | Autostart installed but nothing is served | Run `launchctl print gui/$(id -u)/com.kite-trades-on-chart`. `EX_CONFIG` means launchd could not start it at all, usually because it cannot open its log file; delete `~/Library/Logs/kite-trades-on-chart.log` and run the installer again. |
-| "Connect Kite" reappears after a while | Normal. Zerodha sessions expire; log in again. Downloaded prices are kept. |
+| "Connect Kite" reappears after a while | Normal. The Zerodha token expires; sign in again. Downloaded prices are kept. |
+| "Could not get a login link from Zerodha" | You are on a version from before Zerodha moved to OAuth, in late 2026. Update `serve.py`. |
 | A stock shows `○` and no chart | It is delisted, merged or expired, so no price history exists. Its trades still show in the table. |
 
 ## Disclaimer

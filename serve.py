@@ -12,13 +12,17 @@ mcp.kite.trade.
 
 No dependencies beyond Python 3.8+.
 """
-import http.server, json, os, re, socketserver, sys, threading, time, urllib.error, urllib.request
+import base64, hashlib, http.server, json, os, secrets, socketserver, sys, threading, time
+import urllib.error, urllib.parse, urllib.request
 
 PORT = int(os.environ.get('PORT', 8770))
 HERE = os.path.dirname(os.path.abspath(__file__))
 CACHE = os.path.join(HERE, 'cache')
 SESSION_FILE = os.path.join(CACHE, '.session')
+AUTH_FILE = os.path.join(CACHE, '.auth.json')     # OAuth client id + access token
 MCP_URL = 'https://mcp.kite.trade/mcp'
+MCP_ROOT = 'https://mcp.kite.trade'
+REDIRECT = f'http://localhost:{PORT}/oauth/callback'
 MIN_GAP = 1.1          # seconds between upstream calls; Zerodha rate-limits hard
 WINDOW_DAYS = 1800     # ~2000 daily candles is the per-request ceiling
 
@@ -31,6 +35,8 @@ class Kite:
         self.lock = threading.Lock()
         self.last = 0.0
         self._id = 0
+        self.auth = {}
+        self.pending = {}            # OAuth state -> PKCE verifier, for logins in flight
         # Deliberately no network here. The page must still be served when Zerodha is
         # unreachable or the saved session has gone stale; connecting happens on first use.
 
@@ -46,10 +52,106 @@ class Kite:
         except OSError:
             pass
 
+    # ---- OAuth (Zerodha moved the MCP endpoint behind OAuth in late 2026) ----
+    def _load_auth(self):
+        try:
+            return json.load(open(AUTH_FILE))
+        except Exception:
+            return {}
+
+    def _save_auth(self, d):
+        self.auth = d
+        tmp = AUTH_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(d, f)
+        os.replace(tmp, AUTH_FILE)
+        try:
+            os.chmod(AUTH_FILE, 0o600)         # it holds an access token
+        except OSError:
+            pass
+
+    def forget_token(self):
+        a = self._load_auth()
+        a.pop('access_token', None)
+        self._save_auth(a)
+        self._forget_session()
+
+    @staticmethod
+    def _json(url, data=None, headers=None, method=None):
+        body = None
+        h = {'Accept': 'application/json', 'User-Agent': 'kite-charting/2.1'}
+        if data is not None:
+            body = json.dumps(data).encode()
+            h['Content-Type'] = 'application/json'
+        h.update(headers or {})
+        req = urllib.request.Request(url, data=body, headers=h, method=method)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode() or '{}')
+
+    def _client_id(self):
+        """Register this copy of the app once, as an OAuth public client."""
+        a = self._load_auth()
+        if a.get('client_id'):
+            return a['client_id']
+        reg = self._json(MCP_ROOT + '/register', {
+            'client_name': 'Kite trades on chart',
+            'redirect_uris': [REDIRECT],
+            'grant_types': ['authorization_code'],
+            'response_types': ['code'],
+            'token_endpoint_auth_method': 'none',
+        })
+        a['client_id'] = reg['client_id']
+        if reg.get('client_secret'):
+            a['client_secret'] = reg['client_secret']
+        self._save_auth(a)
+        return a['client_id']
+
+    def start_login(self):
+        """Returns the Zerodha URL to open. The browser comes back to /oauth/callback."""
+        verifier = secrets.token_urlsafe(64)
+        challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(verifier.encode()).digest()).decode().rstrip('=')
+        state = secrets.token_urlsafe(24)
+        self.pending[state] = verifier
+        q = urllib.parse.urlencode({
+            'response_type': 'code', 'client_id': self._client_id(), 'redirect_uri': REDIRECT,
+            'code_challenge': challenge, 'code_challenge_method': 'S256',
+            'state': state, 'scope': 'default', 'resource': MCP_URL,
+        })
+        return MCP_ROOT + '/authorize?' + q
+
+    def finish_login(self, code, state):
+        verifier = self.pending.pop(state, None)
+        if not verifier:
+            raise RuntimeError('that login link has expired, please click Connect Kite again')
+        form = urllib.parse.urlencode({
+            'grant_type': 'authorization_code', 'code': code, 'redirect_uri': REDIRECT,
+            'client_id': self._load_auth().get('client_id', ''), 'code_verifier': verifier,
+            'resource': MCP_URL,
+        }).encode()
+        req = urllib.request.Request(MCP_ROOT + '/token', data=form, method='POST', headers={
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json', 'User-Agent': 'kite-charting/2.1'})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            tok = json.loads(r.read().decode())
+        if not tok.get('access_token'):
+            raise RuntimeError('Zerodha did not return an access token')
+        a = self._load_auth()
+        a['access_token'] = tok['access_token']
+        if tok.get('refresh_token'):
+            a['refresh_token'] = tok['refresh_token']
+        self._save_auth(a)
+        self._forget_session()          # a new identity needs a new MCP session
+        return True
+
+    # ---- MCP transport ----
     def _post(self, payload):
+        token = self._load_auth().get('access_token')
         headers = {'Content-Type': 'application/json',
                    'Accept': 'application/json, text/event-stream',
-                   'User-Agent': 'kite-charting/2.0'}      # a python UA gets a 403
+                   'User-Agent': 'kite-charting/2.1'}      # a python UA gets a 403
+        if token:
+            headers['Authorization'] = 'Bearer ' + token
         if self.session:
             headers['Mcp-Session-Id'] = self.session
         req = urllib.request.Request(MCP_URL, data=json.dumps(payload).encode(), headers=headers)
@@ -77,12 +179,6 @@ class Kite:
             body = ''.join(l[5:].strip() for l in body.splitlines() if l.startswith('data:'))
         return json.loads(body) if body else {}
 
-    def initialize(self):
-        self._post({'jsonrpc': '2.0', 'id': self._next(), 'method': 'initialize', 'params': {
-            'protocolVersion': '2025-03-26', 'capabilities': {},
-            'clientInfo': {'name': 'kite-charting', 'version': '2.0'}}})
-        self._post({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
-
     def call(self, tool, **args):
         body = lambda: {'jsonrpc': '2.0', 'id': self._next(), 'method': 'tools/call',
                         'params': {'name': tool, 'arguments': args}}
@@ -92,11 +188,14 @@ class Kite:
                     self.initialize()
                 r = self._post(body())
             except urllib.error.HTTPError as e:
-                # a saved session that Zerodha no longer accepts: throw it away, open a
-                # fresh one and try once more, rather than failing until someone notices
-                if e.code not in (400, 401, 403):
+                if e.code in (401, 403):
+                    # the access token is no longer accepted: drop it so the page offers
+                    # a fresh Connect Kite rather than failing silently from here on
+                    self.forget_token()
+                    raise RuntimeError('your Zerodha login has expired, click Connect Kite')
+                if e.code != 400:
                     raise
-                self._forget_session()
+                self._forget_session()      # stale MCP session, token is still good
                 self.initialize()
                 r = self._post(body())
         if 'error' in r:
@@ -111,6 +210,8 @@ class Kite:
             return text
 
     def logged_in(self):
+        if not self._load_auth().get('access_token'):
+            return False
         try:
             self.call('get_profile')
             return True
@@ -120,17 +221,7 @@ class Kite:
             return False
 
     def login_url(self):
-        # a fresh session so the link cannot collide with a half-finished or expired one
-        self.session = None
-        try:
-            if os.path.exists(SESSION_FILE):
-                os.remove(SESSION_FILE)
-        except OSError:
-            pass
-        self.initialize()
-        text = self.call('login')
-        m = re.search(r'https://mcp\.kite\.trade/authorize\?session_id=\S+', str(text))
-        return m.group(0).rstrip(')].,') if m else None
+        return self.start_login()
 
 
 kite = Kite()
@@ -236,7 +327,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_page(self, title, msg, ok=True):
+        body = f'''<!doctype html><meta charset="utf-8"><title>{title}</title>
+<style>body{{font:15px/1.6 -apple-system,system-ui,sans-serif;background:#0f1115;color:#e6e8ee;
+display:grid;place-items:center;height:100vh;margin:0;text-align:center}}
+.c{{max-width:420px;padding:28px}}h1{{font-size:19px;margin:0 0 10px;color:{'#26a69a' if ok else '#ef5350'}}}
+p{{color:#8a93a6;margin:0}}a{{color:#5b8def}}</style>
+<div class="c"><h1>{title}</h1><p>{msg}</p></div>'''.encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
+        if self.path.startswith('/oauth/callback'):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if q.get('error'):
+                return self.send_page('Not connected',
+                                      f"Zerodha said: {q['error'][0]}. You can close this tab and try again.", False)
+            try:
+                kite.finish_login(q.get('code', [''])[0], q.get('state', [''])[0])
+                return self.send_page('Connected to Zerodha',
+                                      'You can close this tab and go back to the app.')
+            except Exception as e:                              # noqa: BLE001
+                return self.send_page('Could not finish signing in', str(e), False)
+
         if self.path.startswith('/api/status'):
             try:
                 return self.send_json({'helper': True, 'loggedIn': kite.logged_in()})
