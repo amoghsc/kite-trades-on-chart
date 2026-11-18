@@ -1,3 +1,4 @@
 cache/
 _test/
 *.csv
+__pycache__/

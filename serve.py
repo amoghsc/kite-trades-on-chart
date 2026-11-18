@@ -145,7 +145,7 @@ class Kite:
         return True
 
     # ---- MCP transport ----
-    def _post(self, payload):
+    def _post(self, payload, timeout=60):
         token = self._load_auth().get('access_token')
         headers = {'Content-Type': 'application/json',
                    'Accept': 'application/json, text/event-stream',
@@ -160,7 +160,7 @@ class Kite:
             if gap > 0:
                 time.sleep(gap)
             try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     sid, body = resp.headers.get('mcp-session-id'), resp.read().decode()
                 self.last = time.time()
                 break
@@ -178,6 +178,21 @@ class Kite:
         if body.startswith('event:') or body.startswith('data:'):
             body = ''.join(l[5:].strip() for l in body.splitlines() if l.startswith('data:'))
         return json.loads(body) if body else {}
+
+    def initialize(self):
+        """MCP handshake. Gives us the Mcp-Session-Id that every later call carries."""
+        self._post({'jsonrpc': '2.0', 'id': self._next(), 'method': 'initialize',
+                    'params': {'protocolVersion': '2025-06-18',
+                               'capabilities': {},
+                               'clientInfo': {'name': 'kite-charting', 'version': '2.1'}}})
+        # The "initialized" notification expects no reply, and Zerodha sometimes just
+        # holds the connection open instead of closing it. It is advisory, so send it
+        # with a short leash and carry on either way.
+        try:
+            self._post({'jsonrpc': '2.0', 'method': 'notifications/initialized',
+                        'params': {}}, timeout=5)
+        except Exception:
+            pass
 
     def call(self, tool, **args):
         body = lambda: {'jsonrpc': '2.0', 'id': self._next(), 'method': 'tools/call',
@@ -213,7 +228,7 @@ class Kite:
         if not self._load_auth().get('access_token'):
             return False
         try:
-            self.call('get_profile')
+            self.call('session', mode='status')
             return True
         except Exception:
             # not authorised yet, or a stale/expired session (Zerodha answers 400/403);
@@ -253,20 +268,25 @@ def pick(rows, first_trade=None):
     return sorted(rows, key=rank)[0]
 
 
+def lookup(**args):
+    """One instrument-master lookup. 'full' verbosity is what carries listing_date."""
+    return rows_of(kite.call('market', mode='search', verbosity='full', **args))
+
+
 def resolve(isins, symbols, first_trade=None):
     """Newest ISIN first, then exact ticker. Returns (instrument|None, tried)."""
     tried = []
     for isin in isins:
         tried.append('isin:' + isin)
-        r = pick(kite.call('search_instruments', query=isin, filter_on='isin'), first_trade)
+        r = pick(lookup(search_mode='get_by_isin', isin=isin), first_trade)
         if r:
             return r, tried
     for sym in symbols:
         cands = []
         for exch in ('NSE', 'BSE'):
             tried.append(f'{exch}:{sym}')
-            rows = rows_of(kite.call('search_instruments', query=f'{exch}:{sym}', limit=10))
-            # exact ticker only: searching PARAS also returns PARASPETRO
+            rows = lookup(search_mode='get_by_tradingsymbol', exchange=exch, tradingsymbol=sym)
+            # exact ticker only: a text search for PARAS also returns PARASPETRO
             cands += [x for x in rows if x.get('tradingsymbol') == sym and x.get('exchange') == exch]
         r = pick(cands, first_trade)
         if r:
@@ -295,11 +315,12 @@ def candles(token, start, end):
         cur = a
         while cur <= b:
             stop = min(day_add(cur, WINDOW_DAYS), b)
-            data = kite.call('get_historical_data', instrument_token=token, interval='day',
-                             from_date=f'{cur} 00:00:00', to_date=f'{stop} 23:59:59')
-            if isinstance(data, list):
-                fresh += [{'t': c['date'][:10], 'o': c['open'], 'h': c['high'],
-                           'l': c['low'], 'c': c['close'], 'v': c['volume']} for c in data]
+            data = rows_of(kite.call('market', mode='historical', instrument_token=token,
+                                     interval='day', from_date=f'{cur} 00:00:00',
+                                     to_date=f'{stop} 23:59:59'))
+            fresh += [{'t': c['date'][:10], 'o': c['open'], 'h': c['high'],
+                       'l': c['low'], 'c': c['close'], 'v': c['volume']}
+                      for c in data if c.get('date')]
             cur = day_add(stop, 1)
     if fresh:
         merged = {c['t']: c for c in have}
