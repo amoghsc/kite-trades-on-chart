@@ -177,7 +177,8 @@ ever talks to Zerodha, using their own login. You cannot see their trades and th
 | It worked yesterday, now the page will not load | The helper is not running. Start it, or install the autostart above so it never happens again. |
 | Autostart installed but nothing is served, log full of tracebacks | Older versions died at startup when Zerodha was unreachable or the saved login had gone stale, and the agent then restarted them forever. Update to the current `serve.py`. |
 | Autostart installed but nothing is served | Run `launchctl print gui/$(id -u)/com.kite-trades-on-chart`. `EX_CONFIG` means launchd could not start it at all, usually because it cannot open its log file; delete `~/Library/Logs/kite-trades-on-chart.log` and run the installer again. |
-| "Connect Kite" reappears after a while | Normal. The Zerodha token expires; sign in again. Downloaded prices are kept. |
+| "Connect Kite" reappears after a while | Normal. Zerodha expires the token about a week after you sign in, and issues no refresh token, so roughly weekly you have to click Connect Kite again. Downloaded prices are kept. |
+| Recent trades sit past the end of the chart | Your prices are older than your trades. They are drawn on the right date with no candle behind them, and the header says so. Click Update prices. |
 | "Could not get a login link from Zerodha" | You are on a version from before Zerodha moved to OAuth, in late 2026. Update `serve.py`. |
 | A stock shows `○` and no chart | It is delisted, merged or expired, so no price history exists. Its trades still show in the table. |
 

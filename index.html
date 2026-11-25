@@ -490,6 +490,7 @@ function missingPrices() {
     const c = CANDLES[g.id];
     if (!c || !c.length) return true;
     if (c[c.length - 1].t < shift(todayStr(), -4)) return true;   // stale at the recent end
+    if (c[c.length - 1].t < g.last_trade) return true;            // trades newer than the prices
     // asked this far back already? a stock listed later simply has no earlier history
     return !(i && i.from && i.from <= wantFrom(g));
   });
@@ -748,8 +749,10 @@ function computeMarkers(trades, bars) {
   const byTime = {}; bars.forEach(b => byTime[b.t] = b);
   const agg = {};
   for (const t of trades) {
-    const d = t.candle ? t.candle.t : t.date;
-    let b = bucketOf(d, S.tf); if (!(b in byTime)) b = d;
+    // The trade's own date wins wherever the axis has a slot for it. Falling back to the
+    // matched candle is what snaps a holiday trade onto the previous trading day.
+    let b = bucketOf(t.date, S.tf);
+    if (!(b in byTime) && t.candle) b = bucketOf(t.candle.t, S.tf);
     if (!(b in byTime)) continue;
     const k = b + t.side; agg[k] ??= { t: b, side: t.side, q: 0, v: 0, qRaw: 0, vRaw: 0, n: 0, d0: t.date, d1: t.date };
     const a = agg[k], q = t.qty * t.qtyRatio;      // split-adjusted, so sizes stay comparable
@@ -874,10 +877,18 @@ function closeEditor() { $('#noteEdit').classList.remove('on'); editing = null; 
 function renderChart(keepRange = true) {
   const { trades, candles, stats } = ctx;
   const range = keepRange ? chart.timeScale().getVisibleRange() : null;
-  const bars = aggregate(candles, S.tf); view = { bars };
-  priceSeries.setData(S.type === 'candles'
+  const bars = aggregate(candles, S.tf);
+  // Prices are downloaded, trades are uploaded, so trades can run ahead of the price history.
+  // Those dates get an empty slot on the time axis, which puts their markers on the date they
+  // actually happened instead of silently folding them onto the last candle.
+  const lastBar = bars.length ? bars[bars.length - 1].t : '';
+  const ahead = [...new Set(trades.map(t => bucketOf(t.date, S.tf)))].filter(b => b > lastBar).sort();
+  const slots = ahead.length ? [...bars, ...ahead.map(t => ({ t, pending: true }))] : bars;
+  view = { bars: slots };
+  priceSeries.setData([...(S.type === 'candles'
     ? bars.map(b => ({ time: b.t, open: b.o, high: b.h, low: b.l, close: b.c }))
-    : bars.map(b => ({ time: b.t, value: b.c })));
+    : bars.map(b => ({ time: b.t, value: b.c }))),
+    ...ahead.map(t => ({ time: t }))]);        // whitespace points: extend the axis, draw nothing
   volSeries.setData(bars.map(b => ({ time: b.t, value: b.v, color: b.c >= b.o ? th().volUp : th().volDown })));
   for (const n of [50, 100, 150, 200]) {
     if (S.mas.includes(+n)) {
@@ -890,10 +901,10 @@ function renderChart(keepRange = true) {
   let cur = null; const line = []; const firstBucket = bucketOf(trades[0].date, S.tf);
   for (const b of bars) { if (b.t in ev) cur = ev[b.t]; if (cur != null && b.t >= firstBucket) line.push({ time: b.t, value: cur }); }
   avgSeries.setData(line);
-  view.markers = computeMarkers(trades, bars);
+  view.markers = computeMarkers(trades, slots);
   if (range) { try { chart.timeScale().setVisibleRange(range); } catch (e) {} }
   else { const from = new Date(trades[0].date); from.setMonth(from.getMonth() - 3);
-    try { chart.timeScale().setVisibleRange({ from: from.toISOString().slice(0, 10), to: bars[bars.length - 1].t }); } catch (e) {} }
+    try { chart.timeScale().setVisibleRange({ from: from.toISOString().slice(0, 10), to: slots[slots.length - 1].t }); } catch (e) {} }
   drawOverlay();
 }
 
@@ -1004,7 +1015,10 @@ async function show(gid, keepRange = false) {
     stats0.hasPrices ? cell({ txt: fmt0(stats0.unrealized), raw: stats0.unrealized }, 'Unrealized ₹') : '',
     stats0.adjusted ? cell(plain(String(stats0.adjusted)), 'Corp. adj', 'flag') : '',
   ].join('');
-  $('#head').innerHTML = `<div class="id"><h1>${esc(name)}</h1><div class="sub">${esc(inst.exchange || g.exchanges.join('/'))}${inst.tradingsymbol ? ':' + esc(inst.tradingsymbol) : ''}${inst.name ? ' · ' + esc(inst.name) : ''}</div></div><div class="stats">${stats}</div>`;
+  const lastC = candles.length ? candles[candles.length - 1].t : '';
+  const behind = lastC ? trades.filter(t => t.date > lastC).length : 0;
+  const lag = behind ? ` · <span class="adj">prices stop at ${niceDate(lastC)}, so ${behind} newer trade${behind > 1 ? 's have' : ' has'} no price history yet — use Update prices</span>` : '';
+  $('#head').innerHTML = `<div class="id"><h1>${esc(name)}</h1><div class="sub">${esc(inst.exchange || g.exchanges.join('/'))}${inst.tradingsymbol ? ':' + esc(inst.tradingsymbol) : ''}${inst.name ? ' · ' + esc(inst.name) : ''}${lag}</div></div><div class="stats">${stats}</div>`;
   const empty = $('#chart .empty'); if (empty) empty.remove();
   if (!candles.length) {
     priceSeries.setData([]); volSeries.setData([]); avgSeries.setData([]); view.markers = []; view.bars = [];
@@ -1051,6 +1065,20 @@ function renderList() {
       <div class="m">${g.trades} trades · ${g.first_trade.slice(0, 7)} → ${g.last_trade.slice(0, 7)}</div>
       <div class="m pl">${s && s.openQty > 0 ? 'holding ' + fmt0(s.openQty) : ''}</div></div>`; }).join('');
   $$('#list .row').forEach(r => r.onclick = () => show(r.dataset.g));
+}
+function wireSidebar() {
+  const q = $('#q');
+  q.oninput = renderList;
+  q.onkeydown = e => {
+    // Escape clears the box rather than bubbling up to the chart's own Escape handling
+    if (e.key === 'Escape' && q.value) { q.value = ''; renderList(); e.stopPropagation(); }
+    if (e.key === 'Enter') { const hit = $('#list .row'); if (hit) { q.blur(); show(hit.dataset.g); } }
+  };
+  $$('.sort button').forEach(b => b.onclick = () => {
+    sortKey = b.dataset.s;
+    $$('.sort button').forEach(x => x.classList.toggle('on', x === b));
+    renderList();
+  });
 }
 
 // ================= toolbar =================
@@ -1184,7 +1212,7 @@ function wireBar() {
 // ================= boot =================
 async function startApp() {
   document.body.classList.remove('setup');
-  if (!chart) { buildChart(); wireBar(); }
+  if (!chart) { buildChart(); wireBar(); wireSidebar(); }
   syncBar();
   for (const gid of Object.keys(GROUPS)) recompute(gid);
   renderList(); syncPrices();
